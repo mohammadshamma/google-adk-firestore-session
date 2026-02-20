@@ -84,8 +84,8 @@ async def firestore_client(firestore_emulator):
 
 
 @pytest_asyncio.fixture
-async def service(firestore_client):
-    return FirestoreSessionService(client=firestore_client)
+async def service(firestore_emulator):
+    return FirestoreSessionService(project="test-project")
 
 @pytest.mark.asyncio
 async def test_create_session(service):
