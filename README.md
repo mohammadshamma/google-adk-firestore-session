@@ -1,3 +1,7 @@
+[![Python Tests](https://github.com/mohammadshamma/firestore-session/actions/workflows/python-tests.yml/badge.svg)](https://github.com/mohammadshamma/firestore-session/actions/workflows/python-tests.yml)
+[![Python 3.11+](https://img.shields.io/python/required-version-toml?tomlFilePath=https%3A%2F%2Fraw.githubusercontent.com%2Fmohammadshamma%2Ffirestore-session%2Fmain%2Fpyproject.toml)](https://pypi.org/project/firestore-session/)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
 # Firestore Session for Google ADK
 
 A specialized implementation of the `BaseSessionService` that uses Google Cloud Firestore for persisting application sessions, user states, and event logs.
