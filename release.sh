@@ -63,28 +63,54 @@ if [ "$BRANCH" != "main" ]; then
   exit 1
 fi
 
-# Update version in pyproject.toml
-sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" pyproject.toml
-rm -f pyproject.toml.bak
-
-echo ""
-echo "Will create release v$VERSION:"
-echo "  - Update pyproject.toml version to $VERSION"
-echo "  - Commit: 'Bump version to $VERSION'"
-echo "  - Tag: v$VERSION"
-echo "  - Push commit and tag to origin/main"
-echo ""
-read -rp "Proceed? [y/N] " confirm
-if [[ "$confirm" != [yY] ]]; then
-  echo "Aborted. Reverting pyproject.toml..."
-  git checkout pyproject.toml
+# Ensure main is up to date
+git fetch origin main
+LOCAL=$(git rev-parse HEAD)
+REMOTE=$(git rev-parse origin/main)
+if [ "$LOCAL" != "$REMOTE" ]; then
+  echo "Error: Local main is not up to date with origin/main. Run 'git pull' first."
   exit 1
 fi
 
+RELEASE_BRANCH="release/v$VERSION"
+
+echo ""
+echo "Will create release v$VERSION:"
+echo "  - Create branch '$RELEASE_BRANCH' with version bump"
+echo "  - Open a PR and merge it to main"
+echo "  - Tag the merge commit as v$VERSION"
+echo "  - Push the tag"
+echo ""
+read -rp "Proceed? [y/N] " confirm
+if [[ "$confirm" != [yY] ]]; then
+  echo "Aborted."
+  exit 1
+fi
+
+# Create release branch and commit version bump
+git checkout -b "$RELEASE_BRANCH"
+sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" pyproject.toml
+rm -f pyproject.toml.bak
 git add pyproject.toml
 git commit -m "Bump version to $VERSION"
+git push origin "$RELEASE_BRANCH"
+
+# Create PR and merge it
+PR_URL=$(gh pr create --title "Bump version to $VERSION" --body "Release v$VERSION" --base main --head "$RELEASE_BRANCH")
+echo "Created PR: $PR_URL"
+gh pr merge "$PR_URL" --squash --delete-branch
+echo "PR merged."
+
+# Switch back to main and pull the merge commit
+git checkout main
+git pull origin main
+
+# Tag the merge commit and push the tag
 git tag "v$VERSION"
-git push origin main --tags
+git push origin "v$VERSION"
+
+# Clean up local release branch if it still exists
+git branch -d "$RELEASE_BRANCH" 2>/dev/null || true
 
 echo ""
 echo "Release v$VERSION pushed. The GitHub Actions workflow will handle the rest."
