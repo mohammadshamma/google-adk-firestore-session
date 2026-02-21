@@ -1,8 +1,8 @@
-[![Python Tests](https://github.com/mohammadshamma/firestore-session/actions/workflows/python-tests.yml/badge.svg)](https://github.com/mohammadshamma/firestore-session/actions/workflows/python-tests.yml)
-[![Python 3.11+](https://img.shields.io/python/required-version-toml?tomlFilePath=https%3A%2F%2Fraw.githubusercontent.com%2Fmohammadshamma%2Ffirestore-session%2Fmain%2Fpyproject.toml)](https://pypi.org/project/firestore-session/)
+[![Python Tests](https://github.com/mohammadshamma/google-adk-firestore-session/actions/workflows/python-tests.yml/badge.svg)](https://github.com/mohammadshamma/google-adk-firestore-session/actions/workflows/python-tests.yml)
+[![Python 3.11+](https://img.shields.io/python/required-version-toml?tomlFilePath=https%3A%2F%2Fraw.githubusercontent.com%2Fmohammadshamma%2Fgoogle-adk-firestore-session%2Fmain%2Fpyproject.toml)](https://pypi.org/project/google-adk-firestore-session/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-# Firestore Session for Google ADK
+# Google ADK Firestore Session
 
 A specialized implementation of the `BaseSessionService` that uses Google Cloud Firestore for persisting application sessions, user states, and event logs.
 
@@ -21,13 +21,13 @@ You can include this package in your project's dependencies using the Git URL.
 
 ### Using `pip`
 ```bash
-pip install git+https://github.com/mohammadshamma/firestore-session.git
+pip install git+https://github.com/mohammadshamma/google-adk-firestore-session.git
 ```
 
 ### Using `uv` (pyproject.toml)
 ```toml
 dependencies = [
-    "firestore-session @ git+https://github.com/mohammadshamma/firestore-session.git"
+    "google-adk-firestore-session @ git+https://github.com/mohammadshamma/google-adk-firestore-session.git"
 ]
 ```
 
