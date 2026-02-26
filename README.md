@@ -93,7 +93,6 @@ session_service = FirestoreSessionService()
 
 - `google-adk`: Core agent framework.
 - `google-cloud-firestore`: Official Firestore client.
-- `google-cloud-storage`: Used for extended state persistence.
 
 ## Development
 
