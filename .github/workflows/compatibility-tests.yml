@@ -1,0 +1,54 @@
+name: Compatibility Tests
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  compatibility-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: "oldest supported"
+            adk-spec: "google-adk==1.26.0"
+            firestore-spec: "google-cloud-firestore==2.24.0"
+          - label: "latest supported"
+            adk-spec: "google-adk>=1.26.0,<2.0"
+            firestore-spec: "google-cloud-firestore>=2.24.0,<3.0"
+
+    name: "test (${{ matrix.label }})"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-deps .
+          pip install pytest pytest-asyncio pytest-mock requests
+          pip install '${{ matrix.adk-spec }}' '${{ matrix.firestore-spec }}'
+
+      - name: Log dependency versions
+        run: pip show google-adk google-cloud-firestore
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          install_components: 'cloud-firestore-emulator'
+
+      - name: Run tests
+        run: pytest

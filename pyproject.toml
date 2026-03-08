@@ -16,8 +16,8 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-    "google-adk",
-    "google-cloud-firestore",
+    "google-adk>=1.26.0,<2.0",
+    "google-cloud-firestore>=2.24.0,<3.0",
 ]
 
 [project.urls]
