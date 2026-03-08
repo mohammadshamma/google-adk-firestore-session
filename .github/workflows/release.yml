@@ -58,11 +58,6 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Set up Google Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
-        with:
-          project_id: test-project
-
       - name: Install Firestore Emulator
         run: |
           gcloud components install cloud-firestore-emulator --quiet
