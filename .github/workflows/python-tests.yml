@@ -32,7 +32,7 @@ jobs:
 
     - name: Install Firestore Emulator
       run: |
-        gcloud components install cloud-firestore-emulator --quiet
+        sudo apt-get install -y google-cloud-cli-firestore-emulator
 
     - name: Run tests
       run: |
