@@ -1,4 +1,3 @@
-[![PyPI](https://img.shields.io/pypi/v/google-adk-firestore-session)](https://pypi.org/project/google-adk-firestore-session/)
 [![Python Tests](https://github.com/mohammadshamma/google-adk-firestore-session/actions/workflows/python-tests.yml/badge.svg)](https://github.com/mohammadshamma/google-adk-firestore-session/actions/workflows/python-tests.yml)
 [![Python 3.11+](https://img.shields.io/python/required-version-toml?tomlFilePath=https%3A%2F%2Fraw.githubusercontent.com%2Fmohammadshamma%2Fgoogle-adk-firestore-session%2Fmain%2Fpyproject.toml)](https://pypi.org/project/google-adk-firestore-session/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
