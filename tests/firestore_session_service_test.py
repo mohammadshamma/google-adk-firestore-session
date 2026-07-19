@@ -163,6 +163,40 @@ async def test_append_event_and_state_updates(service):
     assert user_doc.to_dict()["last_visit"] == "today"
 
 @pytest.mark.asyncio
+async def test_event_fields_round_trip(service):
+    """Events are persisted as JSON blobs, so all Event fields must survive a
+    write/read cycle. This guards ADK 2.x, which added new Event fields
+    (e.g. output, environment_id, node_info) that older column-oriented
+    storage would have dropped."""
+    app_name = "test-app-event-fields"
+    user_id = f"user-{uuid.uuid4()}"
+    session = await service.create_session(app_name=app_name, user_id=user_id)
+
+    # Build an event populating whichever fields the installed ADK exposes.
+    # ADK 2.x introduced these; on 1.x they are simply skipped.
+    event_kwargs = {"author": "agent", "invocation_id": "inv-xyz"}
+    expected = {}
+    if "output" in Event.model_fields:
+        event_kwargs["output"] = {"result": "done", "score": 0.9}
+        expected["output"] = {"result": "done", "score": 0.9}
+    if "environment_id" in Event.model_fields:
+        event_kwargs["environment_id"] = "env-42"
+        expected["environment_id"] = "env-42"
+
+    event = Event(**event_kwargs)
+    await service.append_event(session, event)
+
+    fetched = await service.get_session(
+        app_name=app_name, user_id=user_id, session_id=session.id
+    )
+    assert len(fetched.events) == 1
+    loaded = fetched.events[0]
+    assert loaded.id == event.id
+    assert loaded.invocation_id == "inv-xyz"
+    for field, value in expected.items():
+        assert getattr(loaded, field) == value
+
+@pytest.mark.asyncio
 async def test_list_sessions(service):
     app_name = "test-app-list"
     user_id = f"user-{uuid.uuid4()}"
