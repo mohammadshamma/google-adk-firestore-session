@@ -87,8 +87,17 @@ session_service = FirestoreSessionService()
 
 ## Dependencies
 
-- `google-adk`: Core agent framework.
+- `google-adk`: Core agent framework. Compatible with both the 1.x and 2.x
+  release lines (`>=1.26.0,<3.0`).
 - `google-cloud-firestore`: Official Firestore client.
+
+### Compatibility note
+
+Events are persisted as self-describing JSON documents (via `Event.model_dump`
+/ `Event.model_validate`), so the new Event fields introduced in ADK 2.x
+(e.g. `output`, `environment_id`, `node_info`) round-trip automatically with no
+schema change. Sessions and events written by ADK 1.x remain readable under 2.x
+and vice versa; no data migration is required when upgrading.
 
 ## Development
 
