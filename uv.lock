@@ -657,7 +657,7 @@ wheels = [
 
 [[package]]
 name = "google-adk-firestore-session"
-version = "0.1.5"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "google-adk" },
@@ -675,7 +675,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "google-adk", specifier = ">=1.26.0,<2.0" },
+    { name = "google-adk", specifier = ">=1.26.0,<3.0" },
     { name = "google-cloud-firestore", specifier = ">=2.24.0,<3.0" },
 ]
 
