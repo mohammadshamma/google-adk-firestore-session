@@ -198,17 +198,40 @@ async def test_event_fields_round_trip(service):
         assert getattr(loaded, field) == value
 
 @pytest.mark.asyncio
-async def test_list_sessions(service):
-    app_name = "test-app-list"
-    user_id = f"user-{uuid.uuid4()}"
-    
-    s1 = await service.create_session(app_name=app_name, user_id=user_id)
+async def test_list_sessions(service, firestore_client, mocker):
+    app_name = f"test-app-list-{uuid.uuid4()}"
+    user_1 = f"user-1-{uuid.uuid4()}"
+    user_2 = f"user-2-{uuid.uuid4()}"
+
+    await firestore_client.collection("apps").document(app_name).set({"global": "v"})
+    await (
+        firestore_client.collection("apps")
+        .document(app_name)
+        .collection("users")
+        .document(user_1)
+        .set({"pref": "u1"})
+    )
+
+    s1 = await service.create_session(app_name=app_name, user_id=user_1)
     time.sleep(0.01)
-    s2 = await service.create_session(app_name=app_name, user_id=user_id)
-    
-    response = await service.list_sessions(app_name=app_name, user_id=user_id)
-    ids = [s.id for s in response.sessions]
-    assert ids == [s1.id, s2.id]
+    s2 = await service.create_session(app_name=app_name, user_id=user_1)
+    time.sleep(0.01)
+    s3 = await service.create_session(app_name=app_name, user_id=user_2)
+
+    spy_app = mocker.spy(service, "_fetch_app_state")
+    spy_user = mocker.spy(service, "get_user_state")
+
+    # Single-user listing: oldest-first and reads app/user state once (no N+1)
+    response = await service.list_sessions(app_name=app_name, user_id=user_1)
+    assert [s.id for s in response.sessions] == [s1.id, s2.id]
+    assert spy_app.call_count == 1
+    assert spy_user.call_count == 1
+    assert response.sessions[0].state.get("app:global") == "v"
+    assert response.sessions[0].state.get("user:pref") == "u1"
+
+    # All-users listing (user_id=None): returns sessions across all users for app_name
+    all_response = await service.list_sessions(app_name=app_name, user_id=None)
+    assert [s.id for s in all_response.sessions] == [s1.id, s2.id, s3.id]
 
 @pytest.mark.asyncio
 async def test_temp_state_in_memory_and_trimmed_from_persistence(service):
@@ -325,19 +348,26 @@ async def test_get_session_config_semantics(service):
     assert [e.id for e in combined.events] == [e3.id]
 
 @pytest.mark.asyncio
-async def test_unknown_event_fields_tolerated(service):
-    """Events written by a newer ADK version with extra fields (top-level or
-    inside actions) must still deserialize cleanly rather than being dropped."""
+async def test_unknown_event_fields_tolerated(service, caplog):
+    """Events written by a newer ADK version with extra fields at any depth
+    (top-level, inside actions, or inside nested content.parts / compaction)
+    must deserialize cleanly, while truly invalid events log a warning."""
     app_name = "test-app-extra-fields"
     user_id = f"user-{uuid.uuid4()}"
     session = await service.create_session(app_name=app_name, user_id=user_id)
 
-    event = Event(author="agent", timestamp=123.0, actions={"state_delta": {"k": "v"}})
+    event = Event(
+        author="agent",
+        timestamp=123.0,
+        content={"role": "model", "parts": [{"text": "hello"}]},
+        actions={"state_delta": {"k": "v"}},
+    )
     event_dict = event.model_dump(mode="json", exclude_none=True)
     event_dict["future_adk_field"] = {"nested": "value"}
     event_dict.setdefault("actions", {})["future_action_field"] = True
+    event_dict["content"]["parts"][0]["future_part_field"] = "extra"
 
-    await (
+    events_coll = (
         service._client.collection("apps")
         .document(app_name)
         .collection("users")
@@ -345,16 +375,24 @@ async def test_unknown_event_fields_tolerated(service):
         .collection("sessions")
         .document(session.id)
         .collection("events")
-        .document(event.id)
-        .set(event_dict)
+    )
+    await events_coll.document(event.id).set(event_dict)
+
+    # Also write an unrecoverably invalid event (timestamp is not a float)
+    await events_coll.document("corrupt-event").set(
+        {"id": "corrupt-event", "timestamp": {"not": "a-float"}}
     )
 
-    fetched = await service.get_session(
-        app_name=app_name, user_id=user_id, session_id=session.id
-    )
+    with caplog.at_level("WARNING"):
+        fetched = await service.get_session(
+            app_name=app_name, user_id=user_id, session_id=session.id
+        )
+
     assert len(fetched.events) == 1
     assert fetched.events[0].id == event.id
     assert fetched.events[0].actions.state_delta == {"k": "v"}
+    assert fetched.events[0].content.parts[0].text == "hello"
+    assert any("corrupt-event" in rec.message for rec in caplog.records)
 
 @pytest.mark.asyncio
 async def test_get_user_state(service):
