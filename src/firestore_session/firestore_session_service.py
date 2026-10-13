@@ -186,10 +186,15 @@ class FirestoreSessionService(BaseSessionService):
             )
             snapshots = await query.get()
         else:
-            query = self._client.collection_group("sessions").where(
-                filter=firestore.FieldFilter("app_name", "==", app_name)
+            users_coll = (
+                self._client.collection("apps")
+                .document(app_name)
+                .collection("users")
             )
-            snapshots = await query.get()
+            snapshots = []
+            async for user_ref in users_coll.list_documents():
+                user_sessions = await user_ref.collection("sessions").get()
+                snapshots.extend(user_sessions)
 
         if not snapshots:
             return ListSessionsResponse(sessions=[])
@@ -222,7 +227,7 @@ class FirestoreSessionService(BaseSessionService):
         return ListSessionsResponse(sessions=sessions_list)
 
     async def get_user_state(
-        self, app_name: str, user_id: str
+        self, *, app_name: str, user_id: str
     ) -> dict[str, Any]:
         user_ref = (
             self._client.collection("apps")

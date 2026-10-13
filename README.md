@@ -99,6 +99,11 @@ Events are persisted as self-describing JSON documents (via `Event.model_dump`
 schema change. Sessions and events written by ADK 1.x remain readable under 2.x
 and vice versa; no data migration is required when upgrading.
 
+Calling `list_sessions(app_name=..., user_id=None)` to list sessions across all
+users requires no custom Firestore indexes: it enumerates `apps/{app_name}/users`
+(via `list_documents()`) and reads each user's `sessions` subcollection, so its
+cost scales with the number of users in the app.
+
 ## Development
 
 ### Running Tests

@@ -409,7 +409,7 @@ async def test_get_user_state(service):
     )
     await service.append_event(session, event)
 
-    user_state = await service.get_user_state(app_name, user_id)
+    user_state = await service.get_user_state(app_name=app_name, user_id=user_id)
     assert user_state == {"theme": "dark"}
 
 @pytest.mark.asyncio
