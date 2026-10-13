@@ -5,6 +5,7 @@ import time
 from google.cloud import firestore
 from firestore_session.firestore_session_service import FirestoreSessionService
 from google.adk.events.event import Event
+from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.state import State
 
 import subprocess
@@ -202,12 +203,176 @@ async def test_list_sessions(service):
     user_id = f"user-{uuid.uuid4()}"
     
     s1 = await service.create_session(app_name=app_name, user_id=user_id)
+    time.sleep(0.01)
     s2 = await service.create_session(app_name=app_name, user_id=user_id)
     
     response = await service.list_sessions(app_name=app_name, user_id=user_id)
     ids = [s.id for s in response.sessions]
-    assert s1.id in ids
-    assert s2.id in ids
+    assert ids == [s1.id, s2.id]
+
+@pytest.mark.asyncio
+async def test_temp_state_in_memory_and_trimmed_from_persistence(service):
+    app_name = "test-app-temp-state"
+    user_id = f"user-{uuid.uuid4()}"
+    session = await service.create_session(app_name=app_name, user_id=user_id)
+
+    event = Event(
+        author="agent",
+        actions={
+            "state_delta": {
+                "temp:scratch": "ephemeral",
+                "session_step": 1,
+            }
+        },
+    )
+    returned_event = await service.append_event(session, event)
+
+    # In-memory session state must retain temp: keys for downstream agents
+    assert session.state.get("temp:scratch") == "ephemeral"
+    assert session.state.get("session_step") == 1
+
+    # Returned event and in-memory session.events must have temp: keys trimmed from state_delta
+    assert "temp:scratch" not in (returned_event.actions.state_delta or {})
+    assert "temp:scratch" not in (session.events[0].actions.state_delta or {})
+
+    # Persisted session document and event document in Firestore must not contain temp: keys
+    session_doc = await (
+        service._client.collection("apps")
+        .document(app_name)
+        .collection("users")
+        .document(user_id)
+        .collection("sessions")
+        .document(session.id)
+        .get()
+    )
+    assert "temp:scratch" not in session_doc.to_dict().get("state", {})
+
+    event_doc = await (
+        service._client.collection("apps")
+        .document(app_name)
+        .collection("users")
+        .document(user_id)
+        .collection("sessions")
+        .document(session.id)
+        .collection("events")
+        .document(returned_event.id)
+        .get()
+    )
+    persisted_delta = event_doc.to_dict().get("actions", {}).get("state_delta", {})
+    assert "temp:scratch" not in persisted_delta
+    assert persisted_delta.get("session_step") == 1
+
+    # Re-fetching the session from Firestore must not include temp: keys
+    fetched = await service.get_session(
+        app_name=app_name, user_id=user_id, session_id=session.id
+    )
+    assert "temp:scratch" not in fetched.state
+    assert fetched.state.get("session_step") == 1
+
+@pytest.mark.asyncio
+async def test_get_session_config_semantics(service):
+    app_name = "test-app-config"
+    user_id = f"user-{uuid.uuid4()}"
+    session = await service.create_session(app_name=app_name, user_id=user_id)
+
+    e1 = Event(author="user", timestamp=100.0)
+    e2 = Event(author="agent", timestamp=200.0)
+    e3 = Event(author="user", timestamp=300.0)
+    for ev in (e1, e2, e3):
+        await service.append_event(session, ev)
+
+    # num_recent_events < 0 raises ValueError (via GetSessionConfig or get_session)
+    with pytest.raises(ValueError):
+        await service.get_session(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session.id,
+            config=GetSessionConfig(num_recent_events=-1),
+        )
+    with pytest.raises(ValueError):
+        await service.get_session(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session.id,
+            config=GetSessionConfig.model_construct(num_recent_events=-1),
+        )
+
+    # num_recent_events == 0 returns no events
+    zero_events = await service.get_session(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session.id,
+        config=GetSessionConfig(num_recent_events=0),
+    )
+    assert zero_events.events == []
+
+    # after_timestamp is inclusive (>=)
+    after_200 = await service.get_session(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session.id,
+        config=GetSessionConfig(after_timestamp=200.0),
+    )
+    assert [e.id for e in after_200.events] == [e2.id, e3.id]
+
+    # Combined after_timestamp and num_recent_events preserves both filters
+    combined = await service.get_session(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=session.id,
+        config=GetSessionConfig(after_timestamp=200.0, num_recent_events=1),
+    )
+    assert [e.id for e in combined.events] == [e3.id]
+
+@pytest.mark.asyncio
+async def test_unknown_event_fields_tolerated(service):
+    """Events written by a newer ADK version with extra fields (top-level or
+    inside actions) must still deserialize cleanly rather than being dropped."""
+    app_name = "test-app-extra-fields"
+    user_id = f"user-{uuid.uuid4()}"
+    session = await service.create_session(app_name=app_name, user_id=user_id)
+
+    event = Event(author="agent", timestamp=123.0, actions={"state_delta": {"k": "v"}})
+    event_dict = event.model_dump(mode="json", exclude_none=True)
+    event_dict["future_adk_field"] = {"nested": "value"}
+    event_dict.setdefault("actions", {})["future_action_field"] = True
+
+    await (
+        service._client.collection("apps")
+        .document(app_name)
+        .collection("users")
+        .document(user_id)
+        .collection("sessions")
+        .document(session.id)
+        .collection("events")
+        .document(event.id)
+        .set(event_dict)
+    )
+
+    fetched = await service.get_session(
+        app_name=app_name, user_id=user_id, session_id=session.id
+    )
+    assert len(fetched.events) == 1
+    assert fetched.events[0].id == event.id
+    assert fetched.events[0].actions.state_delta == {"k": "v"}
+
+@pytest.mark.asyncio
+async def test_get_user_state(service):
+    app_name = "test-app-user-state"
+    user_id = f"user-{uuid.uuid4()}"
+
+    # Initially empty
+    assert await service.get_user_state(app_name=app_name, user_id=user_id) == {}
+
+    session = await service.create_session(app_name=app_name, user_id=user_id)
+    event = Event(
+        author="agent",
+        actions={"state_delta": {"user:theme": "dark", "session_only": 42}},
+    )
+    await service.append_event(session, event)
+
+    user_state = await service.get_user_state(app_name, user_id)
+    assert user_state == {"theme": "dark"}
 
 @pytest.mark.asyncio
 async def test_delete_session(service):

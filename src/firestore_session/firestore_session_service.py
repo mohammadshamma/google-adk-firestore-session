@@ -22,6 +22,7 @@ from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.base_session_service import ListSessionsResponse
 from google.adk.sessions.session import Session
 from google.adk.events.event import Event
+from google.adk.events.event_actions import EventActions
 from google.adk.sessions.state import State
 
 class FirestoreSessionService(BaseSessionService):
@@ -103,6 +104,13 @@ class FirestoreSessionService(BaseSessionService):
         session_id: str,
         config: Optional[GetSessionConfig] = None,
     ) -> Optional[Session]:
+        if (
+            config
+            and config.num_recent_events is not None
+            and config.num_recent_events < 0
+        ):
+            raise ValueError("num_recent_events must be non-negative")
+
         session_ref = self._client.collection("apps").document(app_name)\
             .collection("users").document(user_id)\
             .collection("sessions").document(session_id)
@@ -115,30 +123,28 @@ class FirestoreSessionService(BaseSessionService):
         # Events are not stored in the main doc
         session_data["events"] = [] 
         
-        # Reconstruct base Session object
-        try:
-            # We explicitly handle 'events' being empty list here
-            session = Session.model_validate(session_data)
-        except Exception as e:
-            # Fallback if validation fails (e.g. data structure evolution)
-            session = Session(
-                id=session_data.get("id"),
-                app_name=session_data.get("app_name"),
-                user_id=session_data.get("user_id"),
-                state=session_data.get("state", {}),
-                last_update_time=session_data.get("last_update_time", 0.0),
-                events=[]
-            )
+        session = self._validate_session(session_data)
+        if session is None:
+            return None
+
+        if config and config.num_recent_events == 0:
+            session.events = []
+            return await self._merge_state(app_name, user_id, session)
 
         # Fetch events
         events_ref = session_ref.collection("events")
-        query = events_ref.order_by("timestamp")
+        query = events_ref
 
-        if config:
-            if config.after_timestamp:
-                query = query.where(filter=firestore.FieldFilter("timestamp", ">", config.after_timestamp))
-            if config.num_recent_events:
-                 query = events_ref.order_by("timestamp", direction=firestore.Query.DESCENDING).limit(config.num_recent_events)
+        if config and config.after_timestamp is not None:
+            query = query.where(
+                filter=firestore.FieldFilter("timestamp", ">=", config.after_timestamp)
+            )
+        if config and config.num_recent_events is not None:
+            query = query.order_by(
+                "timestamp", direction=firestore.Query.DESCENDING
+            ).limit(config.num_recent_events)
+        else:
+            query = query.order_by("timestamp")
         
         # Execute query
         events_snapshots = await query.get()
@@ -146,13 +152,11 @@ class FirestoreSessionService(BaseSessionService):
         loaded_events = []
         for snap in events_snapshots:
             event_data = snap.to_dict()
-            try:
-                event = Event.model_validate(event_data)
+            event = self._validate_event(event_data)
+            if event is not None:
                 loaded_events.append(event)
-            except Exception:
-                continue
 
-        if config and config.num_recent_events:
+        if config and config.num_recent_events is not None:
             loaded_events.sort(key=lambda e: e.timestamp)
 
         session.events = loaded_events
@@ -166,7 +170,7 @@ class FirestoreSessionService(BaseSessionService):
             .collection("users").document(user_id)\
             .collection("sessions")
         
-        query = sessions_ref.order_by("last_update_time", direction=firestore.Query.DESCENDING)
+        query = sessions_ref.order_by("last_update_time", direction=firestore.Query.ASCENDING)
         
         snapshots = await query.get()
         sessions_list = []
@@ -174,14 +178,26 @@ class FirestoreSessionService(BaseSessionService):
         for snap in snapshots:
             data = snap.to_dict()
             data["events"] = [] # Don't load events for listing
-            try:
-                session = Session.model_validate(data)
+            session = self._validate_session(data)
+            if session is not None:
                 merged_session = await self._merge_state(app_name, user_id, session)
                 sessions_list.append(merged_session)
-            except Exception:
-                continue
                 
         return ListSessionsResponse(sessions=sessions_list)
+
+    async def get_user_state(
+        self, app_name: str, user_id: str
+    ) -> dict[str, Any]:
+        user_ref = (
+            self._client.collection("apps")
+            .document(app_name)
+            .collection("users")
+            .document(user_id)
+        )
+        user_snap = await user_ref.get()
+        if not user_snap.exists:
+            return {}
+        return user_snap.to_dict() or {}
 
     async def delete_session(
         self, *, app_name: str, user_id: str, session_id: str
@@ -198,8 +214,12 @@ class FirestoreSessionService(BaseSessionService):
         if event.partial:
             return event
 
-        self._update_session_state_local(session, event)
-        session.events.append(event)
+        # Ensure temp: state is applied to in-memory session.state even on ADK 1.x
+        # where BaseSessionService lacks _apply_temp_state.
+        if not hasattr(self, "_apply_temp_state"):
+            self._apply_temp_state_fallback(session, event)
+
+        event = await super().append_event(session, event)
         session.last_update_time = event.timestamp
 
         batch = self._client.batch()
@@ -276,10 +296,60 @@ class FirestoreSessionService(BaseSessionService):
         if deleted >= batch_size:
             return await self._delete_collection(coll_ref, batch_size)
 
-    def _update_session_state_local(self, session: Session, event: Event) -> None:
+    @staticmethod
+    def _apply_temp_state_fallback(session: Session, event: Event) -> None:
         if not event.actions or not event.actions.state_delta:
             return
         for key, value in event.actions.state_delta.items():
             if key.startswith(State.TEMP_PREFIX):
-                continue
-            session.state.update({key: value})
+                session.state[key] = value
+
+    @staticmethod
+    def _allowed_keys(model_cls: Any) -> set[str]:
+        keys = set(model_cls.model_fields.keys())
+        for field in model_cls.model_fields.values():
+            if field.alias:
+                keys.add(field.alias)
+        return keys
+
+    @classmethod
+    def _validate_event(cls, event_data: dict[str, Any]) -> Optional[Event]:
+        try:
+            return Event.model_validate(event_data)
+        except Exception:
+            try:
+                allowed = cls._allowed_keys(Event)
+                filtered = {k: v for k, v in event_data.items() if k in allowed}
+                actions = filtered.get("actions")
+                if isinstance(actions, dict):
+                    allowed_actions = cls._allowed_keys(EventActions)
+                    filtered["actions"] = {
+                        k: v for k, v in actions.items() if k in allowed_actions
+                    }
+                return Event.model_validate(filtered)
+            except Exception:
+                return None
+
+    @classmethod
+    def _validate_session(cls, session_data: dict[str, Any]) -> Optional[Session]:
+        try:
+            return Session.model_validate(session_data)
+        except Exception:
+            try:
+                allowed = cls._allowed_keys(Session)
+                filtered = {
+                    k: v for k, v in session_data.items() if k in allowed
+                }
+                return Session.model_validate(filtered)
+            except Exception:
+                try:
+                    return Session(
+                        id=session_data.get("id"),
+                        app_name=session_data.get("app_name"),
+                        user_id=session_data.get("user_id"),
+                        state=session_data.get("state", {}),
+                        last_update_time=session_data.get("last_update_time", 0.0),
+                        events=[],
+                    )
+                except Exception:
+                    return None

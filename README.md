@@ -88,7 +88,7 @@ session_service = FirestoreSessionService()
 ## Dependencies
 
 - `google-adk`: Core agent framework. Compatible with both the 1.x and 2.x
-  release lines (`>=1.26.0,<3.0`).
+  release lines (`>=1.28.1,<3.0`).
 - `google-cloud-firestore`: Official Firestore client.
 
 ### Compatibility note
