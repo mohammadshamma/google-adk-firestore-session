@@ -33,8 +33,10 @@ The `FirestoreSessionService` can be configured via constructor arguments, envir
 
 ### Precedence
 1. **Constructor Arguments**: Explicit `project` and `database` passed to the class.
-2. **Environment Variables**: `GOOGLE_CLOUD_PROJECT` and `GOOGLE_DATABASE`.
-3. **Default Credentials**: Standard Google Cloud application default credentials.
+2. **Environment Variables**: `GOOGLE_CLOUD_PROJECT` for the project. There is no environment variable for the database.
+3. **Default Credentials**: Standard Google Cloud application default credentials, for the project.
+
+If no `database` is given, the `(default)` Firestore database is used.
 
 ## Usage with Google ADK
 

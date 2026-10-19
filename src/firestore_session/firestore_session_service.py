@@ -17,7 +17,10 @@ import logging
 import uuid
 import time
 import copy
+from google.api_core import exceptions as google_exceptions
 from google.cloud import firestore
+from google.cloud.firestore_v1.field_path import FieldPath
+from google.adk.errors.already_exists_error import AlreadyExistsError
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.base_session_service import ListSessionsResponse
@@ -53,8 +56,9 @@ class FirestoreSessionService(BaseSessionService):
             database: Optional Firestore database instance name.
         """
         # Initialize the client with provided project/database identifiers
-        # If identifiers are None, AsyncClient uses GOOGLE_CLOUD_PROJECT
-        # and GOOGLE_DATABASE env vars or default credentials.
+        # If project is None, AsyncClient infers it from the environment
+        # (e.g. GOOGLE_CLOUD_PROJECT or application default credentials).
+        # If database is None, the "(default)" database is used.
         self._client = firestore.AsyncClient(project=project, database=database)
 
     async def create_session(
@@ -74,8 +78,9 @@ class FirestoreSessionService(BaseSessionService):
             .collection("sessions").document(session_id)
 
         current_time = time.time()
-        initial_session_state = state or {}
-        
+        state_deltas = self._split_state(state or {})
+        initial_session_state = state_deltas["session"]
+
         # We don't store events in the session document, they go to a subcollection
         session_data = {
             "id": session_id,
@@ -86,8 +91,22 @@ class FirestoreSessionService(BaseSessionService):
             # We don't persist 'events' list in the document, it's reconstructed
         }
 
-        # Create the session document
-        await session_ref.set(session_data)
+        # Create the session document (failing if it already exists) and
+        # write app/user state in one atomic batch.
+        user_ref = session_ref.parent.parent
+        app_ref = user_ref.parent.parent
+        batch = self._client.batch()
+        batch.create(session_ref, session_data)
+        if state_deltas["app"]:
+            batch.set(app_ref, state_deltas["app"], merge=True)
+        if state_deltas["user"]:
+            batch.set(user_ref, state_deltas["user"], merge=True)
+        try:
+            await batch.commit()
+        except google_exceptions.AlreadyExists as exc:
+            raise AlreadyExistsError(
+                f"Session with id {session_id} already exists."
+            ) from exc
 
         # Create the local Session object to return
         session = Session(
@@ -277,20 +296,13 @@ class FirestoreSessionService(BaseSessionService):
         session_updates = {}
 
         if event.actions and event.actions.state_delta:
-            for key, value in event.actions.state_delta.items():
-                if not key or key.startswith(State.TEMP_PREFIX):
-                    continue
-                
-                if key.startswith(State.APP_PREFIX):
-                    clean_key = key.removeprefix(State.APP_PREFIX)
-                    if clean_key:
-                        app_updates[clean_key] = value
-                elif key.startswith(State.USER_PREFIX):
-                    clean_key = key.removeprefix(State.USER_PREFIX)
-                    if clean_key:
-                        user_updates[clean_key] = value
-                else:
-                    session_updates[f"state.{key}"] = value
+            state_deltas = self._split_state(event.actions.state_delta)
+            app_updates = state_deltas["app"]
+            user_updates = state_deltas["user"]
+            for key, value in state_deltas["session"].items():
+                # Quote the key so characters such as "." or "/" are taken
+                # literally instead of being parsed as a field path.
+                session_updates[FieldPath("state", key).to_api_repr()] = value
 
         if app_updates:
             batch.set(app_ref, app_updates, merge=True)
@@ -303,6 +315,28 @@ class FirestoreSessionService(BaseSessionService):
 
         await batch.commit()
         return event
+
+    @staticmethod
+    def _split_state(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        """Splits state into app, user and session parts, dropping temp: keys.
+
+        The app: and user: prefixes are removed from the returned keys.
+        """
+        deltas: dict[str, dict[str, Any]] = {"app": {}, "user": {}, "session": {}}
+        for key, value in state.items():
+            if not key or key.startswith(State.TEMP_PREFIX):
+                continue
+            if key.startswith(State.APP_PREFIX):
+                clean_key = key.removeprefix(State.APP_PREFIX)
+                if clean_key:
+                    deltas["app"][clean_key] = value
+            elif key.startswith(State.USER_PREFIX):
+                clean_key = key.removeprefix(State.USER_PREFIX)
+                if clean_key:
+                    deltas["user"][clean_key] = value
+            else:
+                deltas["session"][key] = value
+        return deltas
 
     async def _fetch_app_state(self, app_name: str) -> dict[str, Any]:
         app_ref = self._client.collection("apps").document(app_name)

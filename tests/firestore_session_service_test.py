@@ -7,6 +7,7 @@ from firestore_session.firestore_session_service import FirestoreSessionService
 from google.adk.events.event import Event
 from google.adk.sessions.base_session_service import GetSessionConfig
 from google.adk.sessions.state import State
+from google.adk.errors.already_exists_error import AlreadyExistsError
 
 import subprocess
 import socket
@@ -432,3 +433,124 @@ async def test_delete_session(service):
         .collection("sessions").document(session.id).collection("events")
     snapshots = await events_ref.get()
     assert len(snapshots) == 0
+
+
+SPECIAL_KEYS = ["config.v1", "a/b", "x[0]", "star*", "tilde~", "back`tick", "sp ace"]
+
+
+def _session_doc_ref(client, app_name, user_id, session_id):
+    return client.collection("apps").document(app_name)\
+        .collection("users").document(user_id)\
+        .collection("sessions").document(session_id)
+
+
+@pytest.mark.asyncio
+async def test_create_session_splits_prefixed_state(service, firestore_client):
+    app_name = f"test-app-create-prefixes-{uuid.uuid4()}"
+    user_id = f"user-{uuid.uuid4()}"
+
+    # Existing app state must be kept, not replaced.
+    await firestore_client.collection("apps").document(app_name).set({"existing": "x"})
+
+    session = await service.create_session(
+        app_name=app_name,
+        user_id=user_id,
+        state={
+            "app:flag": True,
+            "user:name": "ada",
+            "temp:scratch": "gone",
+            "step": 1,
+        },
+    )
+
+    expected = {
+        "app:existing": "x",
+        "app:flag": True,
+        "user:name": "ada",
+        "step": 1,
+    }
+    assert session.state == expected
+
+    app_doc = await firestore_client.collection("apps").document(app_name).get()
+    assert app_doc.to_dict() == {"existing": "x", "flag": True}
+
+    user_doc = await firestore_client.collection("apps").document(app_name)\
+        .collection("users").document(user_id).get()
+    assert user_doc.to_dict() == {"name": "ada"}
+
+    session_doc = await _session_doc_ref(
+        firestore_client, app_name, user_id, session.id
+    ).get()
+    assert session_doc.to_dict()["state"] == {"step": 1}
+
+    fetched = await service.get_session(
+        app_name=app_name, user_id=user_id, session_id=session.id
+    )
+    assert fetched.state == expected
+
+    # App state is shared with other users' sessions.
+    other = await service.create_session(
+        app_name=app_name, user_id=f"user-{uuid.uuid4()}"
+    )
+    assert other.state == {"app:existing": "x", "app:flag": True}
+
+
+@pytest.mark.asyncio
+async def test_create_session_rejects_existing_session_id(service):
+    app_name = "test-app-create-duplicate"
+    user_id = f"user-{uuid.uuid4()}"
+    session_id = f"session-{uuid.uuid4()}"
+
+    session = await service.create_session(
+        app_name=app_name, user_id=user_id, session_id=session_id, state={"keep": 1}
+    )
+    await service.append_event(session, Event(author="user"))
+
+    with pytest.raises(AlreadyExistsError):
+        await service.create_session(
+            app_name=app_name,
+            user_id=user_id,
+            session_id=session_id,
+            state={"keep": 2, "user:clobber": True},
+        )
+
+    fetched = await service.get_session(
+        app_name=app_name, user_id=user_id, session_id=session_id
+    )
+    assert fetched.state == {"keep": 1}
+    assert len(fetched.events) == 1
+    # Nothing from the rejected call was written.
+    assert await service.get_user_state(app_name=app_name, user_id=user_id) == {}
+
+
+@pytest.mark.asyncio
+async def test_special_characters_in_state_keys(service, firestore_client):
+    app_name = f"test-app-special-keys-{uuid.uuid4()}"
+    user_id = f"user-{uuid.uuid4()}"
+
+    initial = {f"init {k}": k for k in SPECIAL_KEYS}
+    session = await service.create_session(
+        app_name=app_name,
+        user_id=user_id,
+        state={**initial, "app:init.dot": 1, "user:init/slash": 2},
+    )
+
+    delta = {k: k for k in SPECIAL_KEYS}
+    delta.update({f"app:{k}": k for k in SPECIAL_KEYS})
+    delta.update({f"user:{k}": k for k in SPECIAL_KEYS})
+    event = Event(author="agent", actions={"state_delta": delta})
+    await service.append_event(session, event)
+
+    expected = {**initial, "app:init.dot": 1, "user:init/slash": 2, **delta}
+    assert session.state == expected
+
+    fetched = await service.get_session(
+        app_name=app_name, user_id=user_id, session_id=session.id
+    )
+    assert fetched.state == expected
+
+    # Keys are stored as literal field names, not split into nested maps.
+    session_doc = await _session_doc_ref(
+        firestore_client, app_name, user_id, session.id
+    ).get()
+    assert session_doc.to_dict()["state"] == {**initial, **{k: k for k in SPECIAL_KEYS}}
