@@ -18,7 +18,7 @@ uv run pytest
 uv run pytest tests/factory_test.py::test_factory_uri_parsing
 ```
 
-Tests require the Firestore Emulator (needs Java 21 and `gcloud` CLI). The test fixtures automatically start/stop the emulator.
+Tests require the Firestore Emulator (needs Java 25+ and `gcloud` CLI). The test fixtures automatically start/stop the emulator.
 
 **Build package:**
 ```bash

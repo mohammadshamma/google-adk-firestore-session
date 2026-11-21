@@ -21,7 +21,7 @@ def get_free_port():
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         return s.getsockname()[1]
 
-@pytest_asyncio.fixture(scope="session")
+@pytest.fixture(scope="session")
 def firestore_emulator():
     """Starts the Firestore emulator for the test session."""
     host = "localhost"
